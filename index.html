@@ -61,12 +61,31 @@
     const ChevronDown = ({ className }) => <svg {...IconProps} className={className}><polyline points="6 9 12 15 18 9"/></svg>;
     const Package = ({ className }) => <svg {...IconProps} className={className}><line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>;
     const Edit = ({ className }) => <svg {...IconProps} className={className}><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>;
+    const Menu = ({ className }) => <svg {...IconProps} className={className}><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="18" x2="20" y2="18"/></svg>;
+    const X = ({ className }) => <svg {...IconProps} className={className}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
 
     // Helper functions for Date Picker
     const getCurrentDate = () => {
       const now = new Date();
       now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
       return now.toISOString().split('T')[0];
+    };
+
+    // Helper to get 1st day of current month (YYYY-MM-DD)
+    const getFirstDayOfMonth = () => {
+      const now = new Date();
+      const y = now.getFullYear();
+      const m = String(now.getMonth() + 1).padStart(2, '0');
+      return `${y}-${m}-01`;
+    };
+
+    // Helper to get last day of current month (YYYY-MM-DD)
+    const getLastDayOfMonth = () => {
+      const now = new Date();
+      const y = now.getFullYear();
+      const m = now.getMonth() + 1;
+      const lastDay = new Date(y, m, 0).getDate();
+      return `${y}-${String(m).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
     };
 
     const formatCustomDate = (dateStr) => {
@@ -83,7 +102,6 @@
     // ==========================================
     const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzBv89-uyKtNnwCKI58cQR_KrQHatRZKIVxHoBpywFxjdqGTg-VNjap9FwNQ9TUhLwsuw/exec"; 
 
-    // Default items array before fetching from sheet
     const DEFAULT_ITEMS_MASTER = [
       { id: 'p1', brand: 'Owl', name: 'Coccyx Cushion', hsn: '90211000', gstRate: 18, taxablePrice: 495.76, priceWithGst: 585 }
     ];
@@ -218,10 +236,11 @@
     function App() {
       const [activeTab, setActiveTab] = useState('create'); 
       const [sameAsBilling, setSameAsBilling] = useState(true);
+      const [isSidebarOpen, setIsSidebarOpen] = useState(false);
       
       const [invoice, setInvoice] = useState(DEFAULT_INVOICE);
       const [invoiceHistory, setInvoiceHistory] = useState([]);
-      const [itemsMaster, setItemsMaster] = useState(DEFAULT_ITEMS_MASTER); // NEW Items Master State
+      const [itemsMaster, setItemsMaster] = useState(DEFAULT_ITEMS_MASTER); 
       const [settings, setSettings] = useState({ prefix: 'FAUVXD', nextNumber: 100 });
       const [isEditing, setIsEditing] = useState(false); 
       
@@ -229,12 +248,17 @@
       const [isFetching, setIsFetching] = useState(false);
       const [notification, setNotification] = useState('');
 
-      // Items Master Form State
       const [itemForm, setItemForm] = useState({ id: '', brand: '', name: '', hsn: '', gstRate: 18, priceWithGst: '' });
-      // NEW: Delete Modal State
       const [deleteModal, setDeleteModal] = useState({ isOpen: false, itemId: null, pin: '' });
+      const [isItemFormVisible, setIsItemFormVisible] = useState(false);
+      
+      // History filters (Mode + Date Range)
+      const [historyFilter, setHistoryFilter] = useState('All');
+      const [startDate, setStartDate] = useState(getFirstDayOfMonth());
+      const [endDate, setEndDate] = useState(getLastDayOfMonth());
 
       const isInterState = invoice.customerStateCode !== FIRM_DETAILS.stateCode;
+      const isInvoiceCancelled = invoice.paymentMode === 'Cancelled';
 
       useEffect(() => {
         fetchAppData();
@@ -290,18 +314,22 @@
 
         setIsSaving(true);
         
-        let finalTotalPrice = 0;
-        invoice.items.forEach(item => {
-          const taxable = (item.price * item.qty) - item.discount;
-          const gstAmt = taxable * (item.gstRate / 100);
-          finalTotalPrice += (taxable + gstAmt);
-        });
+        let finalTotalPriceToSave = 0;
+        
+        // Agar invoice cancelled hai to total amount sheet mein 0.00 save hoga
+        if (invoice.paymentMode !== 'Cancelled') {
+          invoice.items.forEach(item => {
+            const taxable = (item.price * item.qty) - item.discount;
+            const gstAmt = taxable * (item.gstRate / 100);
+            finalTotalPriceToSave += (taxable + gstAmt);
+          });
+        }
 
         const payload = {
           action: 'saveInvoice',
           data: {
             ...invoice,
-            totalAmount: finalTotalPrice.toFixed(2)
+            totalAmount: finalTotalPriceToSave.toFixed(2)
           }
         };
 
@@ -329,24 +357,34 @@
       const saveSettingsToSheet = async () => {
         if (!GOOGLE_SCRIPT_URL) return;
         setIsSaving(true);
-        const payload = { action: 'saveSettings', data: settings };
+        
+        const payload = {
+          action: 'saveSettings',
+          data: settings
+        };
+
         try {
-          const response = await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(payload) });
+          const response = await fetch(GOOGLE_SCRIPT_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify(payload)
+          });
           const result = await response.json();
           if (result.status === 'success') {
             showNotification('✅ Settings Saved Successfully!');
             fetchAppData();
           }
-        } catch (error) { showNotification('❌ Error saving settings.'); }
+        } catch (error) {
+          showNotification('❌ Error saving settings.');
+        }
         setIsSaving(false);
       };
 
-      // --- Item Master Handlers ---
       const handleNewItemClick = () => {
-        // Auto Generate Next ID (e.g. p1 -> p2)
         const currentIds = itemsMaster.map(i => parseInt(i.id.replace('p', '')) || 0);
         const maxId = currentIds.length > 0 ? Math.max(...currentIds) : 0;
         setItemForm({ id: `p${maxId + 1}`, brand: '', name: '', hsn: '', gstRate: 18, priceWithGst: '' });
+        setIsItemFormVisible(true);
       };
 
       const saveItemToSheet = async () => {
@@ -358,7 +396,6 @@
 
         setIsSaving(true);
         
-        // Auto Calculate Taxable Price based on Price With GST and GST Rate
         const rate = parseFloat(itemForm.gstRate) || 0;
         const finalPrice = parseFloat(itemForm.priceWithGst) || 0;
         const calcTaxablePrice = (finalPrice / (1 + (rate / 100))).toFixed(2);
@@ -380,8 +417,9 @@
           const result = await response.json();
           if (result.status === 'success') {
             showNotification('✅ Item Saved to Cloud!');
-            fetchAppData(); // Refresh items
-            setItemForm({ id: '', brand: '', name: '', hsn: '', gstRate: 18, priceWithGst: '' }); // Clear form
+            fetchAppData(); 
+            setItemForm({ id: '', brand: '', name: '', hsn: '', gstRate: 18, priceWithGst: '' }); 
+            setIsItemFormVisible(false);
           } else {
             showNotification('❌ Failed to save item.');
           }
@@ -389,7 +427,6 @@
         setIsSaving(false);
       };
 
-      // NEW: Delete Item logic
       const confirmDeleteItem = async () => {
         if (deleteModal.pin !== '2026') {
           return showNotification('❌ Incorrect Security PIN!');
@@ -411,12 +448,12 @@
           const result = await response.json();
           if (result.status === 'success') {
             showNotification('✅ Item Deleted Successfully!');
-            fetchAppData(); // Refresh items
+            fetchAppData(); 
             setDeleteModal({ isOpen: false, itemId: null, pin: '' });
             
-            // Clear form if the deleted item was currently selected
             if (itemForm.id === deleteModal.itemId) {
               setItemForm({ id: '', brand: '', name: '', hsn: '', gstRate: 18, priceWithGst: '' });
+              setIsItemFormVisible(false);
             }
           } else {
             showNotification('❌ Failed to delete item.');
@@ -433,6 +470,7 @@
         });
         setIsEditing(false); 
         setActiveTab('create');
+        setIsSidebarOpen(false);
       };
 
       const loadOldInvoice = (oldInvoice) => {
@@ -446,6 +484,7 @@
         setInvoice(updatedInvoice);
         setIsEditing(true); 
         setActiveTab('create');
+        setIsSidebarOpen(false);
       };
 
       const handleInputChange = (e) => {
@@ -524,27 +563,62 @@
       let finalTotalPrice = 0;
 
       let qrTotalAmount = 0;
-      invoice.items.forEach(item => {
-        const taxable = (item.price * item.qty) - item.discount;
-        qrTotalAmount += taxable + (taxable * (item.gstRate / 100));
-      });
+      
+      // QR Code calculation (Ignore if cancelled)
+      if (!isInvoiceCancelled) {
+        invoice.items.forEach(item => {
+          const taxable = (item.price * item.qty) - item.discount;
+          qrTotalAmount += taxable + (taxable * (item.gstRate / 100));
+        });
+      }
       
       const formattedQrDate = formatCustomDate(invoice.invoiceDate);
       const qrData = `Invoice No: ${invoice.invoiceNo} \nDate: ${formattedQrDate} \nTotal Amount: Rs. ${qrTotalAmount.toFixed(2)}`;
       const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(qrData)}`;
 
+      // Filter history based on Date Range and Payment Mode
+      const filteredHistory = invoiceHistory.filter(inv => {
+        // Mode filter
+        if (historyFilter !== 'All') {
+          const mode = inv.paymentMode || 'Online';
+          if (mode !== historyFilter) return false;
+        }
+
+        // Date filter
+        if (inv.orderDate) {
+          const invDate = inv.orderDate.split('T')[0];
+          if (startDate && invDate < startDate) return false;
+          if (endDate && invDate > endDate) return false;
+        }
+
+        return true;
+      });
+
       return (
-        <div className="flex h-screen w-full bg-gray-100 font-sans text-gray-800 overflow-hidden">
+        <div className="flex h-screen w-full bg-gray-100 font-sans text-gray-800 overflow-hidden relative">
           
-          <div className="w-64 bg-slate-900 text-slate-300 flex flex-col no-print shadow-xl z-10 shrink-0">
-            <div className="p-5 border-b border-slate-800 flex items-center gap-3">
-              <div className="bg-blue-600 p-2 rounded-lg text-white">
-                <LayoutDashboard className="w-5 h-5" />
+          {/* Sidebar Backdrop Overlay */}
+          {isSidebarOpen && (
+            <div 
+              className="fixed inset-0 bg-black/50 z-40 no-print transition-opacity" 
+              onClick={() => setIsSidebarOpen(false)}
+            ></div>
+          )}
+
+          {/* Collapsible Left Navigation Panel */}
+          <div className={`fixed inset-y-0 left-0 z-50 w-64 bg-slate-900 text-slate-300 flex flex-col no-print shadow-2xl transition-transform duration-300 ease-in-out ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+            <div className="p-5 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="bg-blue-600 p-2 rounded-lg text-white">
+                  <LayoutDashboard className="w-5 h-5" />
+                </div>
+                <div>
+                  <h1 className="text-white font-bold text-lg leading-tight tracking-wide">{FIRM_DETAILS.name}</h1>
+                </div>
               </div>
-              <div>
-                <h1 className="text-white font-bold text-lg leading-tight tracking-wide">{FIRM_DETAILS.name}</h1>
-                <p className="text-[10px] text-slate-400">Billing System</p>
-              </div>
+              <button onClick={() => setIsSidebarOpen(false)} className="text-slate-400 hover:text-white p-1 rounded-md">
+                <X className="w-5 h-5" />
+              </button>
             </div>
             
             <div className="p-3 space-y-2 mt-4 flex-1">
@@ -556,21 +630,21 @@
               </button>
               
               <button 
-                onClick={() => setActiveTab('history')}
+                onClick={() => { setActiveTab('history'); setIsSidebarOpen(false); }}
                 className={`w-full flex items-center gap-3 p-3 rounded-lg transition-all text-sm font-medium ${activeTab === 'history' ? 'bg-blue-600 text-white shadow-md' : 'hover:bg-slate-800 hover:text-white'}`}
               >
                 <History className="w-4 h-4" /> Invoice History
               </button>
 
               <button 
-                onClick={() => setActiveTab('items')}
+                onClick={() => { setActiveTab('items'); setIsSidebarOpen(false); }}
                 className={`w-full flex items-center gap-3 p-3 rounded-lg transition-all text-sm font-medium ${activeTab === 'items' ? 'bg-blue-600 text-white shadow-md' : 'hover:bg-slate-800 hover:text-white'}`}
               >
                 <Package className="w-4 h-4" /> Items Master
               </button>
 
               <button 
-                onClick={() => setActiveTab('settings')}
+                onClick={() => { setActiveTab('settings'); setIsSidebarOpen(false); }}
                 className={`w-full flex items-center gap-3 p-3 rounded-lg transition-all text-sm font-medium ${activeTab === 'settings' ? 'bg-blue-600 text-white shadow-md' : 'hover:bg-slate-800 hover:text-white'}`}
               >
                 <SettingsIcon className="w-4 h-4" /> Settings
@@ -583,682 +657,795 @@
             </div>
           </div>
 
-          <div className="flex-1 h-full overflow-y-auto print-area relative">
+          {/* Main Layout wrapper */}
+          <div className="flex-1 flex flex-col h-full w-full relative">
             
-            {notification && (
-              <div className="absolute top-4 right-4 bg-slate-800 text-white px-4 py-3 rounded-lg shadow-2xl z-50 animate-bounce flex items-center gap-2">
-                {notification}
-              </div>
-            )}
+            {/* Top Bar for Hamburger Menu */}
+            <header className="bg-white border-b border-gray-200 p-3 flex items-center gap-4 no-print shadow-sm z-30 shrink-0">
+              <button 
+                onClick={() => setIsSidebarOpen(true)}
+                className="p-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors flex items-center justify-center"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+              <h1 className="font-bold text-lg text-gray-800 flex items-center gap-2">
+                {activeTab === 'create' && <><FileText className="w-5 h-5 text-blue-600"/> Invoice Entry</>}
+                {activeTab === 'history' && <><History className="w-5 h-5 text-blue-600"/> Invoice History</>}
+                {activeTab === 'items' && <><Package className="w-5 h-5 text-blue-600"/> Items Master</>}
+                {activeTab === 'settings' && <><SettingsIcon className="w-5 h-5 text-blue-600"/> Settings</>}
+              </h1>
+            </header>
 
-            {/* NEW: Security PIN Modal for Deletion */}
-            {deleteModal.isOpen && (
-              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 no-print">
-                <div className="bg-white p-6 rounded-xl shadow-2xl max-w-sm w-full mx-4">
-                  <h3 className="font-bold text-xl mb-2 text-red-600 flex items-center gap-2">
-                    <Trash2 className="w-5 h-5" /> Security Check
-                  </h3>
-                  <p className="text-sm text-gray-600 mb-4">You are about to delete item <strong>{deleteModal.itemId}</strong>. Please enter the security PIN to confirm.</p>
-                  
-                  <input
-                    type="password"
-                    autoFocus
-                    placeholder="Enter PIN..."
-                    className="w-full border-2 border-gray-200 p-3 rounded-lg mb-6 outline-none focus:border-red-500 text-center text-lg tracking-widest font-bold"
-                    value={deleteModal.pin}
-                    onChange={e => setDeleteModal({...deleteModal, pin: e.target.value})}
-                    onKeyDown={e => e.key === 'Enter' && confirmDeleteItem()}
-                  />
-                  
-                  <div className="flex gap-3 justify-end">
-                    <button 
-                      onClick={() => setDeleteModal({isOpen: false, itemId: null, pin: ''})} 
-                      className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium rounded-lg transition-colors"
-                    >
-                      Cancel
-                    </button>
-                    <button 
-                      onClick={confirmDeleteItem} 
-                      disabled={isSaving}
-                      className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition-colors disabled:bg-red-300 flex items-center gap-2"
-                    >
-                      {isSaving ? <RefreshCw className="w-4 h-4 animate-spin" /> : null}
-                      Delete Item
-                    </button>
+            {/* Scrollable Main Area */}
+            <main className="flex-1 overflow-y-auto print-area w-full relative">
+              
+              {notification && (
+                <div className="absolute top-4 right-4 bg-slate-800 text-white px-4 py-3 rounded-lg shadow-2xl z-50 animate-bounce flex items-center gap-2">
+                  {notification}
+                </div>
+              )}
+
+              {/* Security PIN Modal for Deletion */}
+              {deleteModal.isOpen && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 no-print">
+                  <div className="bg-white p-6 rounded-xl shadow-2xl max-w-sm w-full mx-4">
+                    <h3 className="font-bold text-xl mb-2 text-red-600 flex items-center gap-2">
+                      <Trash2 className="w-5 h-5" /> Security Check
+                    </h3>
+                    <p className="text-sm text-gray-600 mb-4">You are about to delete item <strong>{deleteModal.itemId}</strong>. Please enter the security PIN to confirm.</p>
+                    
+                    <input
+                      type="password"
+                      autoFocus
+                      placeholder="Enter PIN..."
+                      className="w-full border-2 border-gray-200 p-3 rounded-lg mb-6 outline-none focus:border-red-500 text-center text-lg tracking-widest font-bold"
+                      value={deleteModal.pin}
+                      onChange={e => setDeleteModal({...deleteModal, pin: e.target.value})}
+                      onKeyDown={e => e.key === 'Enter' && confirmDeleteItem()}
+                    />
+                    
+                    <div className="flex gap-3 justify-end">
+                      <button 
+                        onClick={() => setDeleteModal({isOpen: false, itemId: null, pin: ''})} 
+                        className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium rounded-lg transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button 
+                        onClick={confirmDeleteItem} 
+                        disabled={isSaving}
+                        className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition-colors disabled:bg-red-300 flex items-center gap-2"
+                      >
+                        {isSaving ? <RefreshCw className="w-4 h-4 animate-spin" /> : null}
+                        Delete Item
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            {activeTab === 'create' && (
-              <div className="p-6 grid grid-cols-1 xl:grid-cols-12 gap-6 max-w-[1600px] mx-auto print-area">
-                
-                <div className="xl:col-span-5 bg-white p-6 rounded-xl shadow-sm border border-gray-200 no-print max-h-[calc(100vh-3rem)] overflow-y-auto">
-                  <div className="flex items-center justify-between mb-6 pb-4 border-b">
-                    <h2 className="text-xl font-bold flex items-center gap-2 text-gray-800">
-                      <FileText className="w-5 h-5 text-blue-600" />
-                      Invoice Details
-                    </h2>
-                    <div className="flex gap-2">
-                      <button 
-                        onClick={saveToSheet}
-                        disabled={isSaving}
-                        className={`${isEditing ? 'bg-orange-500 hover:bg-orange-600 disabled:bg-orange-300' : 'bg-green-600 hover:bg-green-700 disabled:bg-green-400'} text-white px-3 py-2 rounded-md flex items-center gap-2 text-sm transition-colors shadow-sm`}
-                      >
-                        {isSaving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} 
-                        {isEditing ? 'Update' : 'Save'}
-                      </button>
-                      <button 
-                        onClick={printInvoice}
-                        className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-md flex items-center gap-2 text-sm transition-colors shadow-sm"
-                      >
-                        <Printer className="w-4 h-4" /> Print
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="space-y-5">
-                    <div className="grid grid-cols-2 gap-4 text-sm bg-gray-50 p-4 rounded-lg border">
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Order ID <span className="text-red-500">*</span></label>
-                        <input type="text" name="orderId" value={invoice.orderId} onChange={handleInputChange} className="w-full border p-2 rounded bg-white shadow-inner" />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Order Date</label>
-                        <input 
-                          type="date" 
-                          name="orderDate" 
-                          value={invoice.orderDate} 
-                          onChange={handleInputChange} 
-                          className="w-full border border-blue-200 p-2 rounded bg-gradient-to-r from-blue-50 to-indigo-50 text-indigo-800 shadow-inner font-bold outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all cursor-pointer text-xs" 
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Invoice No (Locked)</label>
-                        <input 
-                          type="text" 
-                          name="invoiceNo" 
-                          value={invoice.invoiceNo} 
-                          disabled={true}
-                          readOnly
-                          className="w-full border p-2 rounded shadow-inner font-bold bg-gray-200 text-gray-500 cursor-not-allowed border-gray-300" 
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Invoice Date</label>
-                        <input 
-                          type="date" 
-                          name="invoiceDate" 
-                          value={invoice.invoiceDate} 
-                          onChange={handleInputChange} 
-                          className="w-full border border-purple-200 p-2 rounded bg-gradient-to-r from-purple-50 to-pink-50 text-purple-800 shadow-inner font-bold outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-200 transition-all cursor-pointer text-xs" 
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Payment Mode</label>
-                        <select name="paymentMode" value={invoice.paymentMode || 'Online'} onChange={handleInputChange} className="w-full border p-2 rounded bg-white shadow-inner outline-none focus:border-blue-500 font-medium">
-                          <option value="Online">Online</option>
-                          <option value="COD">Cash on Delivery (COD)</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className="space-y-3 text-sm bg-gray-50 p-4 rounded-lg border">
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Customer Name <span className="text-red-500">*</span></label>
-                        <input type="text" name="customerName" value={invoice.customerName} onChange={handleInputChange} className="w-full border p-2 rounded bg-white shadow-inner" />
-                      </div>
-                      
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-xs font-semibold text-gray-600 mb-1">State <span className="text-red-500">*</span></label>
-                          <SearchableDropdown 
-                            value={invoice.customerStateName}
-                            options={Object.entries(STATE_DISTRICT_DATA).map(([code, data]) => ({ label: data.name, value: code }))}
-                            onSelect={(code) => {
-                              const stateName = STATE_DISTRICT_DATA[code].name;
-                              setInvoice({
-                                ...invoice,
-                                customerStateName: stateName,
-                                customerStateCode: code,
-                                customerDistrict: ''
-                              });
-                            }}
-                            placeholder="Select State"
-                          />
-                          <p className="text-[10px] text-gray-500 mt-1 font-medium">
-                            Code: {invoice.customerStateCode || '--'} {isInterState ? "(IGST)" : "(CGST/SGST)"}
-                          </p>
-                        </div>
-
-                        <div>
-                          <label className="block text-xs font-semibold text-gray-600 mb-1">District <span className="text-red-500">*</span></label>
-                          <SearchableDropdown 
-                            value={invoice.customerDistrict}
-                            options={invoice.customerStateCode && STATE_DISTRICT_DATA[invoice.customerStateCode] 
-                              ? STATE_DISTRICT_DATA[invoice.customerStateCode].districts.map(d => ({ label: d, value: d }))
-                              : []}
-                            onSelect={(district) => setInvoice({...invoice, customerDistrict: district})}
-                            placeholder="Select District"
-                            disabled={!invoice.customerStateCode}
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Billing Address <span className="text-red-500">*</span></label>
-                        <textarea name="billingAddress" value={invoice.billingAddress} onChange={handleInputChange} rows="2" className="w-full border p-2 rounded bg-white shadow-inner"></textarea>
-                      </div>
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <label className="block text-xs font-semibold text-gray-600">Shipping Address <span className="text-red-500">*</span></label>
-                          <label className="flex items-center gap-1 text-[10px] text-gray-600 cursor-pointer font-medium bg-gray-200 px-2 py-1 rounded hover:bg-gray-300 transition-colors">
-                            <input type="checkbox" checked={sameAsBilling} onChange={handleSameAsBillingChange} className="w-3 h-3 cursor-pointer accent-blue-600"/>
-                            Same as Billing
-                          </label>
-                        </div>
-                        <textarea 
-                          name="shippingAddress" 
-                          value={invoice.shippingAddress} 
-                          onChange={handleInputChange} 
-                          rows="2" 
-                          className="w-full border p-2 rounded shadow-inner disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed"
-                          disabled={sameAsBilling}
-                        ></textarea>
-                      </div>
-                    </div>
-
-                    <div className="bg-gray-50 p-4 rounded-lg border">
-                      <div className="flex justify-between items-center mb-4 pb-2 border-b">
-                        <h3 className="font-semibold text-sm text-gray-700">Items</h3>
-                        <button onClick={addItem} className="bg-white border border-blue-200 text-blue-600 hover:bg-blue-50 px-2 py-1 rounded flex items-center gap-1 text-xs font-medium shadow-sm transition-colors">
-                          <Plus className="w-3 h-3" /> Add Item
+              {activeTab === 'create' && (
+                <div className="p-4 md:p-6 grid grid-cols-1 xl:grid-cols-12 gap-6 max-w-[1800px] mx-auto print-area">
+                  
+                  <div className="xl:col-span-5 bg-white p-6 rounded-xl shadow-sm border border-gray-200 no-print">
+                    <div className="flex items-center justify-end mb-6 pb-4 border-b">
+                      <div className="flex gap-2">
+                        <button 
+                          onClick={saveToSheet}
+                          disabled={isSaving}
+                          className={`${isEditing ? 'bg-orange-500 hover:bg-orange-600 disabled:bg-orange-300' : 'bg-green-600 hover:bg-green-700 disabled:bg-green-400'} text-white px-3 py-2 rounded-md flex items-center gap-2 text-sm transition-colors shadow-sm`}
+                        >
+                          {isSaving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} 
+                          {isEditing ? 'Update' : 'Save'}
+                        </button>
+                        <button 
+                          onClick={printInvoice}
+                          className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-md flex items-center gap-2 text-sm transition-colors shadow-sm"
+                        >
+                          <Printer className="w-4 h-4" /> Print
                         </button>
                       </div>
-                      
-                      <div className="space-y-4">
-                        {invoice.items.map((item) => (
-                          <div key={item.id} className="bg-white border p-3 rounded-lg relative text-sm shadow-sm hover:border-blue-200 transition-colors">
-                            <button onClick={() => removeItem(item.id)} className="absolute top-2 right-2 text-gray-400 hover:text-red-500 transition-colors bg-gray-50 p-1 rounded-md">
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                            <div className="grid grid-cols-1 gap-3 mt-2">
-                              
-                              <div>
-                                <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wide">Product Name (Search)</label>
-                                <input 
-                                  list={`products-list-${item.id}`}
-                                  value={item.productName} 
-                                  onChange={(e) => handleProductChange(item.id, e.target.value)} 
-                                  className="w-full border-b-2 border-dashed border-gray-300 p-1 text-sm outline-none focus:border-blue-500 bg-yellow-50 font-medium" 
-                                  placeholder="Select or type..."
-                                />
-                                <datalist id={`products-list-${item.id}`}>
-                                  {itemsMaster.map(p => (
-                                    <option key={p.id} value={p.name} />
-                                  ))}
-                                </datalist>
-                              </div>
+                    </div>
 
-                              <div className="grid grid-cols-2 gap-3">
-                                 <div>
-                                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wide">HSN</label>
-                                  <input type="text" value={item.hsn} onChange={(e) => handleItemChange(item.id, 'hsn', e.target.value)} className="w-full border p-1.5 rounded text-xs outline-none focus:border-blue-500 shadow-inner" />
-                                </div>
+                    <div className="space-y-5">
+                      <div className="grid grid-cols-2 gap-4 text-sm bg-gray-50 p-4 rounded-lg border">
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 mb-1">Order ID <span className="text-red-500">*</span></label>
+                          <input type="text" name="orderId" value={invoice.orderId} onChange={handleInputChange} className="w-full border p-2 rounded bg-white shadow-inner" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 mb-1">Order Date</label>
+                          <input 
+                            type="date" 
+                            name="orderDate" 
+                            value={invoice.orderDate} 
+                            onChange={handleInputChange} 
+                            className="w-full border border-blue-200 p-2 rounded bg-gradient-to-r from-blue-50 to-indigo-50 text-indigo-800 shadow-inner font-bold outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all cursor-pointer text-xs" 
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 mb-1">Invoice No (Locked)</label>
+                          <input 
+                            type="text" 
+                            name="invoiceNo" 
+                            value={invoice.invoiceNo} 
+                            disabled={true}
+                            readOnly
+                            className="w-full border p-2 rounded shadow-inner font-bold bg-gray-200 text-gray-500 cursor-not-allowed border-gray-300" 
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 mb-1">Invoice Date</label>
+                          <input 
+                            type="date" 
+                            name="invoiceDate" 
+                            value={invoice.invoiceDate} 
+                            onChange={handleInputChange} 
+                            className="w-full border border-purple-200 p-2 rounded bg-gradient-to-r from-purple-50 to-pink-50 text-purple-800 shadow-inner font-bold outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-200 transition-all cursor-pointer text-xs" 
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 mb-1">Payment Mode</label>
+                          <select name="paymentMode" value={invoice.paymentMode || 'Online'} onChange={handleInputChange} className="w-full border p-2 rounded bg-white shadow-inner outline-none focus:border-blue-500 font-medium">
+                            <option value="Online">Online</option>
+                            <option value="COD">Cash on Delivery (COD)</option>
+                            {/* Cancelled option sirf purani invoice modify karte time aayega */}
+                            {isEditing && <option value="Cancelled" className="text-red-600 font-bold">Cancelled</option>}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="space-y-3 text-sm bg-gray-50 p-4 rounded-lg border">
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 mb-1">Customer Name <span className="text-red-500">*</span></label>
+                          <input type="text" name="customerName" value={invoice.customerName} onChange={handleInputChange} className="w-full border p-2 rounded bg-white shadow-inner" />
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-xs font-semibold text-gray-600 mb-1">State <span className="text-red-500">*</span></label>
+                            <SearchableDropdown 
+                              value={invoice.customerStateName}
+                              options={Object.entries(STATE_DISTRICT_DATA).map(([code, data]) => ({ label: data.name, value: code }))}
+                              onSelect={(code) => {
+                                const stateName = STATE_DISTRICT_DATA[code].name;
+                                setInvoice({
+                                  ...invoice,
+                                  customerStateName: stateName,
+                                  customerStateCode: code,
+                                  customerDistrict: ''
+                                });
+                              }}
+                              placeholder="Select State"
+                            />
+                            <p className="text-[10px] text-gray-500 mt-1 font-medium">
+                              Code: {invoice.customerStateCode || '--'} {isInterState ? "(IGST)" : "(CGST/SGST)"}
+                            </p>
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-semibold text-gray-600 mb-1">District <span className="text-red-500">*</span></label>
+                            <SearchableDropdown 
+                              value={invoice.customerDistrict}
+                              options={invoice.customerStateCode && STATE_DISTRICT_DATA[invoice.customerStateCode] 
+                                ? STATE_DISTRICT_DATA[invoice.customerStateCode].districts.map(d => ({ label: d, value: d }))
+                                : []}
+                              onSelect={(district) => setInvoice({...invoice, customerDistrict: district})}
+                              placeholder="Select District"
+                              disabled={!invoice.customerStateCode}
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 mb-1">Billing Address <span className="text-red-500">*</span></label>
+                          <textarea name="billingAddress" value={invoice.billingAddress} onChange={handleInputChange} rows="2" className="w-full border p-2 rounded bg-white shadow-inner"></textarea>
+                        </div>
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="block text-xs font-semibold text-gray-600">Shipping Address <span className="text-red-500">*</span></label>
+                            <label className="flex items-center gap-1 text-[10px] text-gray-600 cursor-pointer font-medium bg-gray-200 px-2 py-1 rounded hover:bg-gray-300 transition-colors">
+                              <input type="checkbox" checked={sameAsBilling} onChange={handleSameAsBillingChange} className="w-3 h-3 cursor-pointer accent-blue-600"/>
+                              Same as Billing
+                            </label>
+                          </div>
+                          <textarea 
+                            name="shippingAddress" 
+                            value={invoice.shippingAddress} 
+                            onChange={handleInputChange} 
+                            rows="2" 
+                            className="w-full border p-2 rounded shadow-inner disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed"
+                            disabled={sameAsBilling}
+                          ></textarea>
+                        </div>
+                      </div>
+
+                      <div className="bg-gray-50 p-4 rounded-lg border">
+                        <div className="flex justify-between items-center mb-4 pb-2 border-b">
+                          <h3 className="font-semibold text-sm text-gray-700">Items</h3>
+                          <button onClick={addItem} className="bg-white border border-blue-200 text-blue-600 hover:bg-blue-50 px-2 py-1 rounded flex items-center gap-1 text-xs font-medium shadow-sm transition-colors">
+                            <Plus className="w-3 h-3" /> Add Item
+                          </button>
+                        </div>
+                        
+                        <div className="space-y-4">
+                          {invoice.items.map((item) => (
+                            <div key={item.id} className="bg-white border p-3 rounded-lg relative text-sm shadow-sm hover:border-blue-200 transition-colors">
+                              <button onClick={() => removeItem(item.id)} className="absolute top-2 right-2 text-gray-400 hover:text-red-500 transition-colors bg-gray-50 p-1 rounded-md">
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                              <div className="grid grid-cols-1 gap-3 mt-2">
+                                
                                 <div>
-                                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wide">GST Rate (%)</label>
-                                  <select value={item.gstRate} onChange={(e) => handleItemChange(item.id, 'gstRate', e.target.value)} className="w-full border p-1.5 rounded text-xs outline-none focus:border-blue-500 bg-white shadow-inner">
-                                    <option value={0}>0%</option>
-                                    <option value={5}>5%</option>
-                                    <option value={9}>9%</option>
-                                    <option value={12}>12%</option>
-                                    <option value={18}>18%</option>
-                                    <option value={28}>28%</option>
-                                  </select>
+                                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wide">Product Name (Search)</label>
+                                  <input 
+                                    list={`products-list-${item.id}`}
+                                    value={item.productName} 
+                                    onChange={(e) => handleProductChange(item.id, e.target.value)} 
+                                    className="w-full border-b-2 border-dashed border-gray-300 p-1 text-sm outline-none focus:border-blue-500 bg-yellow-50 font-medium" 
+                                    placeholder="Select or type..."
+                                  />
+                                  <datalist id={`products-list-${item.id}`}>
+                                    {itemsMaster.map(p => (
+                                      <option key={p.id} value={p.name} />
+                                    ))}
+                                  </datalist>
                                 </div>
-                              </div>
-                              <div className="grid grid-cols-3 gap-3">
-                                <div>
-                                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wide">Taxable Price</label>
-                                  <input type="number" value={item.price} onChange={(e) => handleItemChange(item.id, 'price', e.target.value)} className="w-full border p-1.5 rounded text-xs outline-none focus:border-blue-500 shadow-inner" />
+
+                                <div className="grid grid-cols-2 gap-3">
+                                   <div>
+                                    <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wide">HSN</label>
+                                    <input type="text" value={item.hsn} onChange={(e) => handleItemChange(item.id, 'hsn', e.target.value)} className="w-full border p-1.5 rounded text-xs outline-none focus:border-blue-500 shadow-inner" />
+                                  </div>
+                                  <div>
+                                    <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wide">GST Rate (%)</label>
+                                    <select value={item.gstRate} onChange={(e) => handleItemChange(item.id, 'gstRate', e.target.value)} className="w-full border p-1.5 rounded text-xs outline-none focus:border-blue-500 bg-white shadow-inner">
+                                      <option value={0}>0%</option>
+                                      <option value={5}>5%</option>
+                                      <option value={9}>9%</option>
+                                      <option value={12}>12%</option>
+                                      <option value={18}>18%</option>
+                                      <option value={28}>28%</option>
+                                    </select>
+                                  </div>
                                 </div>
-                                <div>
-                                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wide">Qty</label>
-                                  <input type="number" value={item.qty} onChange={(e) => handleItemChange(item.id, 'qty', e.target.value)} className="w-full border p-1.5 rounded text-xs outline-none focus:border-blue-500 shadow-inner" />
-                                </div>
-                                <div>
-                                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wide">Discount</label>
-                                  <input type="number" value={item.discount} onChange={(e) => handleItemChange(item.id, 'discount', e.target.value)} className="w-full border p-1.5 rounded text-xs outline-none focus:border-blue-500 shadow-inner" />
+                                <div className="grid grid-cols-3 gap-3">
+                                  <div>
+                                    <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wide">Taxable Price</label>
+                                    <input type="number" value={item.price} onChange={(e) => handleItemChange(item.id, 'price', e.target.value)} className="w-full border p-1.5 rounded text-xs outline-none focus:border-blue-500 shadow-inner" />
+                                  </div>
+                                  <div>
+                                    <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wide">Qty</label>
+                                    <input type="number" value={item.qty} onChange={(e) => handleItemChange(item.id, 'qty', e.target.value)} className="w-full border p-1.5 rounded text-xs outline-none focus:border-blue-500 shadow-inner" />
+                                  </div>
+                                  <div>
+                                    <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wide">Discount</label>
+                                    <input type="number" value={item.discount} onChange={(e) => handleItemChange(item.id, 'discount', e.target.value)} className="w-full border p-1.5 rounded text-xs outline-none focus:border-blue-500 shadow-inner" />
+                                  </div>
                                 </div>
                               </div>
                             </div>
+                          ))}
+                        </div>
+                      </div>
+
+                    </div>
+                  </div>
+
+                  <div className="xl:col-span-7 flex justify-center print-area pt-6 xl:pt-0">
+                    <div 
+                      id="invoice-preview" 
+                      className="bg-white p-8 shadow-2xl print:shadow-none w-[210mm] min-h-[297mm] text-[11px] leading-tight text-black box-border border border-gray-200 relative"
+                    >
+                      {/* Cancelled Watermark - yaha overlay print aur view dono mein aayega */}
+                      {isInvoiceCancelled && (
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-20 z-50">
+                          <span className="text-red-600 font-bold text-7xl uppercase border-8 border-red-600 p-4 transform -rotate-45">
+                            Cancelled
+                          </span>
+                        </div>
+                      )}
+
+                      <div className="border-t-2 border-dashed border-black mb-4"></div>
+
+                      <div className="grid grid-cols-12 gap-4 border-b pb-4 mb-4">
+                        <div className="col-span-4">
+                          <h1 className="text-lg font-bold mb-2">Tax Invoice</h1>
+                          <table className="w-full text-left">
+                            <tbody>
+                              <tr><td className="w-20 text-gray-600">Order Id:</td><td className="font-semibold">{invoice.orderId}</td></tr>
+                              <tr><td className="w-20 text-gray-600">Order Date:</td><td className="whitespace-nowrap">{formatCustomDate(invoice.orderDate)}</td></tr>
+                            </tbody>
+                          </table>
+                        </div>
+                        <div className="col-span-4">
+                          <table className="w-full text-left mt-7">
+                            <tbody>
+                              <tr><td className="w-20 text-gray-600">Invoice No:</td><td className="font-semibold">{invoice.invoiceNo}</td></tr>
+                              <tr><td className="w-20 text-gray-600">Invoice Date:</td><td className="whitespace-nowrap">{formatCustomDate(invoice.invoiceDate)}</td></tr>
+                              <tr>
+                                <td className="w-20 text-gray-600">Payment:</td>
+                                <td className={`font-semibold ${isInvoiceCancelled ? 'text-red-600' : ''}`}>
+                                  {invoice.paymentMode || 'Online'}
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                        <div className="col-span-4 flex justify-between">
+                          <div className="mt-7">
+                            <p><span className="text-gray-600">GSTIN:</span> {FIRM_DETAILS.gstin}</p>
+                            <p><span className="text-gray-600">PAN:</span> {FIRM_DETAILS.pan}</p>
                           </div>
-                        ))}
-                      </div>
-                    </div>
-
-                  </div>
-                </div>
-
-                <div className="xl:col-span-7 flex justify-center print-area">
-                  <div 
-                    id="invoice-preview" 
-                    className="bg-white p-8 shadow-2xl print:shadow-none w-[210mm] min-h-[297mm] text-[11px] leading-tight text-black box-border border border-gray-200"
-                  >
-                    <div className="border-t-2 border-dashed border-black mb-4"></div>
-
-                    <div className="grid grid-cols-12 gap-4 border-b pb-4 mb-4">
-                      <div className="col-span-4">
-                        <h1 className="text-lg font-bold mb-2">Tax Invoice</h1>
-                        <table className="w-full text-left">
-                          <tbody>
-                            <tr><td className="w-20 text-gray-600">Order Id:</td><td className="font-semibold">{invoice.orderId}</td></tr>
-                            <tr><td className="w-20 text-gray-600">Order Date:</td><td className="whitespace-nowrap">{formatCustomDate(invoice.orderDate)}</td></tr>
-                          </tbody>
-                        </table>
-                      </div>
-                      <div className="col-span-4">
-                        <table className="w-full text-left mt-7">
-                          <tbody>
-                            <tr><td className="w-20 text-gray-600">Invoice No:</td><td className="font-semibold">{invoice.invoiceNo}</td></tr>
-                            <tr><td className="w-20 text-gray-600">Invoice Date:</td><td className="whitespace-nowrap">{formatCustomDate(invoice.invoiceDate)}</td></tr>
-                            <tr><td className="w-20 text-gray-600">Payment:</td><td className="font-semibold">{invoice.paymentMode || 'Online'}</td></tr>
-                          </tbody>
-                        </table>
-                      </div>
-                      <div className="col-span-4 flex justify-between">
-                        <div className="mt-7">
-                          <p><span className="text-gray-600">GSTIN:</span> {FIRM_DETAILS.gstin}</p>
-                          <p><span className="text-gray-600">PAN:</span> {FIRM_DETAILS.pan}</p>
-                        </div>
-                        <div className="w-20 h-20 bg-gray-50 border border-gray-200 flex items-center justify-center p-1 rounded shadow-sm">
-                          <img src={qrUrl} alt="Auto QR Code" className="w-full h-full object-contain mix-blend-multiply" />
+                          <div className="w-20 h-20 bg-gray-50 border border-gray-200 flex items-center justify-center p-1 rounded shadow-sm">
+                            <img src={qrUrl} alt="Auto QR Code" className="w-full h-full object-contain mix-blend-multiply" />
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    <div className="grid grid-cols-3 gap-6 mb-6">
-                      <div>
-                        <h3 className="font-bold text-[12px] mb-1">Sold By</h3>
-                        <p className="font-semibold">{FIRM_DETAILS.name},</p>
-                        <p className="whitespace-pre-wrap">{FIRM_DETAILS.address}</p>
-                        <p className="mt-1 font-semibold">GST: {FIRM_DETAILS.gstin}</p>
+                      <div className="grid grid-cols-3 gap-6 mb-6">
+                        <div>
+                          <h3 className="font-bold text-[12px] mb-1">Sold By</h3>
+                          <p className="font-semibold">{FIRM_DETAILS.name},</p>
+                          <p className="whitespace-pre-wrap">{FIRM_DETAILS.address}</p>
+                          <p className="mt-1 font-semibold">GST: {FIRM_DETAILS.gstin}</p>
+                        </div>
+                        <div>
+                          <h3 className="font-bold text-[12px] mb-1">Billing Address</h3>
+                          <p className="font-semibold">{invoice.customerName},</p>
+                          <p className="whitespace-pre-wrap">{invoice.billingAddress}</p>
+                          <p className="font-medium mt-1">
+                            {invoice.customerDistrict ? `${invoice.customerDistrict}, ` : ''}{invoice.customerStateName}
+                          </p>
+                        </div>
+                        <div>
+                          <h3 className="font-bold text-[12px] mb-1">Shipping ADDRESS</h3>
+                          <p className="font-semibold">{invoice.customerName},</p>
+                          <p className="whitespace-pre-wrap">{invoice.shippingAddress}</p>
+                          <p className="font-medium mt-1">
+                            {invoice.customerDistrict ? `${invoice.customerDistrict}, ` : ''}{invoice.customerStateName}
+                          </p>
+                        </div>
                       </div>
-                      <div>
-                        <h3 className="font-bold text-[12px] mb-1">Billing Address</h3>
-                        <p className="font-semibold">{invoice.customerName},</p>
-                        <p className="whitespace-pre-wrap">{invoice.billingAddress}</p>
-                        <p className="font-medium mt-1">
-                          {invoice.customerDistrict ? `${invoice.customerDistrict}, ` : ''}{invoice.customerStateName}
-                        </p>
-                      </div>
-                      <div>
-                        <h3 className="font-bold text-[12px] mb-1">Shipping ADDRESS</h3>
-                        <p className="font-semibold">{invoice.customerName},</p>
-                        <p className="whitespace-pre-wrap">{invoice.shippingAddress}</p>
-                        <p className="font-medium mt-1">
-                          {invoice.customerDistrict ? `${invoice.customerDistrict}, ` : ''}{invoice.customerStateName}
-                        </p>
-                      </div>
-                    </div>
 
-                    <table className="w-full border-collapse border border-gray-400 mb-1 text-center">
-                      <thead>
-                        <tr className="border-b border-gray-400 font-bold bg-gray-50">
-                          <th className="border-r border-gray-400 p-2 text-left w-1/4">Product</th>
-                          <th className="border-r border-gray-400 p-2 text-left">Description</th>
-                          <th className="border-r border-gray-400 p-2">Qty</th>
-                          <th className="border-r border-gray-400 p-2">Gross<br/>Amount</th>
-                          <th className="border-r border-gray-400 p-2">Discount</th>
-                          <th className="border-r border-gray-400 p-2">Taxable<br/>Value</th>
-                          {!isInterState && <th className="border-r border-gray-400 p-2">CGST</th>}
-                          {!isInterState && <th className="border-r border-gray-400 p-2">SGST/<br/>UTGST</th>}
-                          {isInterState && <th className="border-r border-gray-400 p-2">IGST</th>}
-                          <th className="border-r border-gray-400 p-2">CESS</th>
-                          <th className="p-2">Total</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {invoice.items.map((item) => {
-                          const grossAmount = item.price * item.qty;
-                          const taxableValue = grossAmount - item.discount;
-                          
-                          let cgstAmt = 0, sgstAmt = 0, igstAmt = 0;
-                          if (!isInterState) {
-                            cgstAmt = taxableValue * (item.gstRate / 2) / 100;
-                            sgstAmt = taxableValue * (item.gstRate / 2) / 100;
-                          } else {
-                            igstAmt = taxableValue * item.gstRate / 100;
-                          }
-                          
-                          const totalAmt = taxableValue + cgstAmt + sgstAmt + igstAmt;
-                          
-                          totalQty += item.qty;
-                          finalTotalPrice += totalAmt;
+                      <table className="w-full border-collapse border border-gray-400 mb-1 text-center relative z-20">
+                        <thead>
+                          <tr className="border-b border-gray-400 font-bold bg-gray-50">
+                            <th className="border-r border-gray-400 p-2 text-left w-1/4">Product</th>
+                            <th className="border-r border-gray-400 p-2 text-left">Description</th>
+                            <th className="border-r border-gray-400 p-2">Qty</th>
+                            <th className="border-r border-gray-400 p-2">Gross<br/>Amount</th>
+                            <th className="border-r border-gray-400 p-2">Discount</th>
+                            <th className="border-r border-gray-400 p-2">Taxable<br/>Value</th>
+                            {!isInterState && <th className="border-r border-gray-400 p-2">CGST</th>}
+                            {!isInterState && <th className="border-r border-gray-400 p-2">SGST/<br/>UTGST</th>}
+                            {isInterState && <th className="border-r border-gray-400 p-2">IGST</th>}
+                            <th className="border-r border-gray-400 p-2">CESS</th>
+                            <th className="p-2">Total</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {invoice.items.map((item) => {
+                            // Cancelled hone par values 0 set karni hain view aur save calculation dono me
+                            const grossAmount = isInvoiceCancelled ? 0 : item.price * item.qty;
+                            const taxableValue = isInvoiceCancelled ? 0 : grossAmount - item.discount;
+                            
+                            let cgstAmt = 0, sgstAmt = 0, igstAmt = 0;
+                            if (!isInvoiceCancelled) {
+                              if (!isInterState) {
+                                cgstAmt = taxableValue * (item.gstRate / 2) / 100;
+                                sgstAmt = taxableValue * (item.gstRate / 2) / 100;
+                              } else {
+                                igstAmt = taxableValue * item.gstRate / 100;
+                              }
+                            }
+                            
+                            const totalAmt = isInvoiceCancelled ? 0 : taxableValue + cgstAmt + sgstAmt + igstAmt;
+                            
+                            totalQty += item.qty; // Qty dikhate rahenge chahe cancel ho 
+                            finalTotalPrice += totalAmt;
 
-                          return (
-                            <tr key={item.id} className="border-b border-gray-300">
-                              <td className="border-r border-gray-400 p-2 text-left align-top">
-                                {item.productName}<br/>
-                                <span className="text-[9px] text-gray-500">{item.description}</span>
-                              </td>
-                              <td className="border-r border-gray-400 p-2 text-left align-top text-[10px]">
-                                HSN: {item.hsn} <br/>
-                                {!isInterState ? 
-                                  `| CGST: ${(item.gstRate/2).toFixed(2)}% | SGST: ${(item.gstRate/2).toFixed(2)}% | CESS: 0.00%` : 
-                                  `| IGST: ${item.gstRate.toFixed(2)}% | CESS: 0.00%`
-                                }
-                              </td>
-                              <td className="border-r border-gray-400 p-2">{item.qty}</td>
-                              <td className="border-r border-gray-400 p-2">{grossAmount.toFixed(2)}</td>
-                              <td className="border-r border-gray-400 p-2">{(item.discount || 0).toFixed(2)}</td>
-                              <td className="border-r border-gray-400 p-2">{taxableValue.toFixed(2)}</td>
-                              {!isInterState && <td className="border-r border-gray-400 p-2">{cgstAmt.toFixed(2)}</td>}
-                              {!isInterState && <td className="border-r border-gray-400 p-2">{sgstAmt.toFixed(2)}</td>}
-                              {isInterState && <td className="border-r border-gray-400 p-2">{igstAmt.toFixed(2)}</td>}
-                              <td className="border-r border-gray-400 p-2">0.00</td>
-                              <td className="p-2">{totalAmt.toFixed(2)}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                            return (
+                              <tr key={item.id} className="border-b border-gray-300">
+                                <td className="border-r border-gray-400 p-2 text-left align-top">
+                                  {item.productName}<br/>
+                                  <span className="text-[9px] text-gray-500">{item.description}</span>
+                                </td>
+                                <td className="border-r border-gray-400 p-2 text-left align-top text-[10px]">
+                                  HSN: {item.hsn} <br/>
+                                  {!isInterState ? 
+                                    `| CGST: ${(item.gstRate/2).toFixed(2)}% | SGST: ${(item.gstRate/2).toFixed(2)}% | CESS: 0.00%` : 
+                                    `| IGST: ${item.gstRate.toFixed(2)}% | CESS: 0.00%`
+                                  }
+                                </td>
+                                <td className="border-r border-gray-400 p-2">{item.qty}</td>
+                                <td className="border-r border-gray-400 p-2">{grossAmount.toFixed(2)}</td>
+                                <td className="border-r border-gray-400 p-2">{(isInvoiceCancelled ? 0 : item.discount || 0).toFixed(2)}</td>
+                                <td className="border-r border-gray-400 p-2">{taxableValue.toFixed(2)}</td>
+                                {!isInterState && <td className="border-r border-gray-400 p-2">{cgstAmt.toFixed(2)}</td>}
+                                {!isInterState && <td className="border-r border-gray-400 p-2">{sgstAmt.toFixed(2)}</td>}
+                                {isInterState && <td className="border-r border-gray-400 p-2">{igstAmt.toFixed(2)}</td>}
+                                <td className="border-r border-gray-400 p-2">0.00</td>
+                                <td className="p-2">{totalAmt.toFixed(2)}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
 
-                    <div className="flex justify-between items-center border border-gray-400 border-t-0 p-2 font-bold mb-6 bg-gray-50">
-                      <div>TOTAL QTY: {totalQty}</div>
-                      <div className="text-right">
-                        <div>TOTAL PRICE: {finalTotalPrice.toFixed(2)}</div>
-                        <div className="text-[9px] font-normal text-gray-600">All values are in INR</div>
+                      <div className="flex justify-between items-center border border-gray-400 border-t-0 p-2 font-bold mb-6 bg-gray-50 relative z-20">
+                        <div>TOTAL QTY: {totalQty}</div>
+                        <div className="text-right">
+                          <div>TOTAL PRICE: {finalTotalPrice.toFixed(2)}</div>
+                          <div className="text-[9px] font-normal text-gray-600">All values are in INR</div>
+                        </div>
                       </div>
-                    </div>
 
-                    <div className="flex justify-between items-end mt-12">
-                      <div className="text-[10px] leading-relaxed">
-                        <p>Seller Registered Address: {FIRM_DETAILS.name},</p>
-                        <p className="uppercase">{FIRM_DETAILS.address}</p>
-                        <p>FSSAI License number: null</p>
-                        <p className="mt-6">E. & O.E.</p>
-                      </div>
-                      <div className="text-center">
-                        <p className="text-[12px] mb-1">Ordered Through</p>
-                        <div className="font-bold text-[10px] italic">[ AI Traders System ]</div>
-                      </div>
-                      <div className="text-right flex flex-col items-end">
-                        {FIRM_DETAILS.signatureUrl ? (
-                          <img src={FIRM_DETAILS.signatureUrl} alt="Signature" className="h-16 w-32 object-contain mb-1 mix-blend-multiply" />
-                        ) : (
-                          <div className="h-16 w-32 border border-gray-200 bg-gray-50 flex items-center justify-center text-gray-400 italic mb-1 rounded">Signature</div>
-                        )}
-                        <p className="font-bold text-[14px]">{FIRM_DETAILS.name}</p>
-                        <p className="text-[10px]">Authorized Signature</p>
+                      <div className="flex justify-between items-end mt-12 relative z-20">
+                        <div className="text-[10px] leading-relaxed">
+                          <p>Seller Registered Address: {FIRM_DETAILS.name},</p>
+                          <p className="uppercase">{FIRM_DETAILS.address}</p>
+                          <p>FSSAI License number: null</p>
+                          <p className="mt-6">E. & O.E.</p>
+                        </div>
+                        <div className="text-center">
+                          <p className="text-[12px] mb-1">Ordered Through</p>
+                          <div className="font-bold text-[10px] italic">[ AI Traders System ]</div>
+                        </div>
+                        <div className="text-right flex flex-col items-end">
+                          {FIRM_DETAILS.signatureUrl ? (
+                            <img src={FIRM_DETAILS.signatureUrl} alt="Signature" className="h-16 w-32 object-contain mb-1 mix-blend-multiply" />
+                          ) : (
+                            <div className="h-16 w-32 border border-gray-200 bg-gray-50 flex items-center justify-center text-gray-400 italic mb-1 rounded">Signature</div>
+                          )}
+                          <p className="font-bold text-[14px]">{FIRM_DETAILS.name}</p>
+                          <p className="text-[10px]">Authorized Signature</p>
+                        </div>
                       </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            {/* ------------------- VIEW: ITEMS MASTER ------------------- */}
-            {activeTab === 'items' && (
-              <div className="p-8 max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
-                
-                {/* Form Column */}
-                <div className="lg:col-span-4 bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-                  <h2 className="text-lg font-bold flex items-center gap-2 text-gray-800 mb-6 border-b pb-4">
-                    <Package className="w-5 h-5 text-blue-600" />
-                    {itemForm.id ? `Edit Item: ${itemForm.id}` : 'Add New Item'}
-                  </h2>
-
-                  <div className="space-y-4">
-                    {!itemForm.id && (
+              {/* ------------------- VIEW: ITEMS MASTER ------------------- */}
+              {activeTab === 'items' && (
+                <div className="p-4 md:p-8 max-w-7xl mx-auto flex flex-col gap-6">
+                  
+                  {/* Add New Item Button (Visible when form is hidden) */}
+                  {!isItemFormVisible && (
+                    <div>
                       <button 
                         onClick={handleNewItemClick}
-                        className="w-full bg-blue-50 text-blue-600 hover:bg-blue-100 p-2 rounded-lg font-bold flex items-center justify-center gap-2 transition-colors mb-4 border border-blue-200"
+                        className="bg-white border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all px-6 py-4 rounded-xl font-extrabold text-slate-800 flex items-center gap-3 w-fit"
                       >
-                        <Plus className="w-4 h-4" /> Generate New Item ID
+                        <Package className="w-6 h-6 text-blue-600" />
+                        <span className="text-xl tracking-tight">Add New Item</span>
                       </button>
+                    </div>
+                  )}
+
+                  <div className={`grid grid-cols-1 ${isItemFormVisible ? 'lg:grid-cols-12' : ''} gap-8`}>
+                    
+                    {/* Form Column */}
+                    {isItemFormVisible && (
+                      <div className="lg:col-span-4 bg-white p-6 rounded-xl shadow-sm border border-gray-200 h-fit">
+                        <div className="flex justify-between items-center mb-6 border-b pb-4">
+                          <h2 className="text-lg font-bold flex items-center gap-2 text-gray-800">
+                            <Package className="w-5 h-5 text-blue-600" />
+                            {itemForm.id && itemsMaster.some(i => i.id === itemForm.id) ? `Edit Item: ${itemForm.id}` : 'Add New Item'}
+                          </h2>
+                          <button 
+                            onClick={() => setIsItemFormVisible(false)} 
+                            className="text-gray-400 hover:text-gray-600 transition-colors p-1 rounded-md hover:bg-gray-100"
+                            title="Close Form"
+                          >
+                            <X className="w-5 h-5" />
+                          </button>
+                        </div>
+
+                        <div className="space-y-4">
+                          <div>
+                            <label className="block text-xs font-semibold text-gray-600 mb-1">Item ID (Auto)</label>
+                            <input type="text" value={itemForm.id} readOnly className="w-full border p-2 rounded bg-gray-100 text-gray-500 font-bold outline-none cursor-not-allowed" placeholder="e.g. p6" />
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-semibold text-gray-600 mb-1">Brand Name</label>
+                            <input type="text" value={itemForm.brand} onChange={e => setItemForm({...itemForm, brand: e.target.value})} className="w-full border p-2 rounded bg-white outline-none focus:border-blue-500" placeholder="e.g. Owl" />
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-semibold text-gray-600 mb-1">Product Name <span className="text-red-500">*</span></label>
+                            <input type="text" value={itemForm.name} onChange={e => setItemForm({...itemForm, name: e.target.value})} className="w-full border p-2 rounded bg-white outline-none focus:border-blue-500" placeholder="e.g. Coccyx Cushion" />
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-semibold text-gray-600 mb-1">HSN Code <span className="text-red-500">*</span></label>
+                            <input type="text" value={itemForm.hsn} onChange={e => setItemForm({...itemForm, hsn: e.target.value})} className="w-full border p-2 rounded bg-white outline-none focus:border-blue-500" placeholder="e.g. 90211000" />
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-xs font-semibold text-gray-600 mb-1">GST Rate (%) <span className="text-red-500">*</span></label>
+                              <select value={itemForm.gstRate} onChange={e => setItemForm({...itemForm, gstRate: Number(e.target.value)})} className="w-full border p-2 rounded bg-white outline-none focus:border-blue-500">
+                                <option value={0}>0%</option>
+                                <option value={5}>5%</option>
+                                <option value={9}>9%</option>
+                                <option value={12}>12%</option>
+                                <option value={18}>18%</option>
+                                <option value={28}>28%</option>
+                              </select>
+                            </div>
+
+                            <div>
+                              <label className="block text-xs font-semibold text-gray-600 mb-1">Final Price (Inc. GST) <span className="text-red-500">*</span></label>
+                              <input type="number" value={itemForm.priceWithGst} onChange={e => setItemForm({...itemForm, priceWithGst: e.target.value})} className="w-full border p-2 rounded bg-white outline-none focus:border-blue-500 font-bold text-green-700" placeholder="e.g. 585" />
+                            </div>
+                          </div>
+
+                          <div className="bg-gray-50 p-3 rounded-lg border border-dashed border-gray-300 mt-2">
+                            <p className="text-[10px] text-gray-500 uppercase tracking-wide font-bold mb-1">Auto-Calculated Taxable Price</p>
+                            <p className="text-lg font-black text-gray-800">
+                              ₹ {itemForm.priceWithGst && itemForm.gstRate ? (parseFloat(itemForm.priceWithGst) / (1 + (parseFloat(itemForm.gstRate) / 100))).toFixed(2) : '0.00'}
+                            </p>
+                          </div>
+
+                          <div className="flex gap-2 mt-4">
+                            <button 
+                              onClick={() => setIsItemFormVisible(false)}
+                              className="w-1/3 bg-gray-100 hover:bg-gray-200 text-gray-700 p-3 rounded-lg font-bold transition-colors"
+                            >
+                              Cancel
+                            </button>
+                            <button 
+                              onClick={saveItemToSheet}
+                              disabled={isSaving || !itemForm.id}
+                              className="w-2/3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white p-3 rounded-lg font-bold flex items-center justify-center gap-2 transition-colors"
+                            >
+                              {isSaving ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />} 
+                              Save
+                            </button>
+                          </div>
+                        </div>
+                      </div>
                     )}
 
-                    <div>
-                      <label className="block text-xs font-semibold text-gray-600 mb-1">Item ID (Auto)</label>
-                      <input type="text" value={itemForm.id} readOnly className="w-full border p-2 rounded bg-gray-100 text-gray-500 font-bold outline-none cursor-not-allowed" placeholder="e.g. p6" />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-semibold text-gray-600 mb-1">Brand Name</label>
-                      <input type="text" value={itemForm.brand} onChange={e => setItemForm({...itemForm, brand: e.target.value})} className="w-full border p-2 rounded bg-white outline-none focus:border-blue-500" placeholder="e.g. Owl" />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-semibold text-gray-600 mb-1">Product Name <span className="text-red-500">*</span></label>
-                      <input type="text" value={itemForm.name} onChange={e => setItemForm({...itemForm, name: e.target.value})} className="w-full border p-2 rounded bg-white outline-none focus:border-blue-500" placeholder="e.g. Coccyx Cushion" />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-semibold text-gray-600 mb-1">HSN Code <span className="text-red-500">*</span></label>
-                      <input type="text" value={itemForm.hsn} onChange={e => setItemForm({...itemForm, hsn: e.target.value})} className="w-full border p-2 rounded bg-white outline-none focus:border-blue-500" placeholder="e.g. 90211000" />
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">GST Rate (%) <span className="text-red-500">*</span></label>
-                        <select value={itemForm.gstRate} onChange={e => setItemForm({...itemForm, gstRate: Number(e.target.value)})} className="w-full border p-2 rounded bg-white outline-none focus:border-blue-500">
-                          <option value={0}>0%</option>
-                          <option value={5}>5%</option>
-                          <option value={9}>9%</option>
-                          <option value={12}>12%</option>
-                          <option value={18}>18%</option>
-                          <option value={28}>28%</option>
-                        </select>
+                    {/* Table Column */}
+                    <div className={`${isItemFormVisible ? 'lg:col-span-8' : ''} bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden`}>
+                      <div className="p-4 border-b flex justify-between items-center bg-slate-50">
+                        <h3 className="font-bold text-gray-700">Existing Items Directory</h3>
+                        <button onClick={fetchAppData} className="text-gray-500 hover:text-blue-600">
+                          <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin text-blue-600' : ''}`} />
+                        </button>
                       </div>
-
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Final Price (Inc. GST) <span className="text-red-500">*</span></label>
-                        <input type="number" value={itemForm.priceWithGst} onChange={e => setItemForm({...itemForm, priceWithGst: e.target.value})} className="w-full border p-2 rounded bg-white outline-none focus:border-blue-500 font-bold text-green-700" placeholder="e.g. 585" />
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                          <thead className="bg-white border-b border-gray-200 text-xs uppercase text-gray-500">
+                            <tr>
+                              <th className="p-3">ID</th>
+                              <th className="p-3">Product Name</th>
+                              <th className="p-3">HSN</th>
+                              <th className="p-3">GST %</th>
+                              <th className="p-3">Taxable</th>
+                              <th className="p-3">Final Price</th>
+                              <th className="p-3 text-center">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="text-sm">
+                            {itemsMaster.length === 0 ? (
+                              <tr><td colSpan="7" className="p-8 text-center text-gray-500">No items found.</td></tr>
+                            ) : (
+                              itemsMaster.map((item, idx) => (
+                                <tr key={idx} className="border-b border-gray-100 hover:bg-blue-50 transition-colors">
+                                  <td className="p-3 font-mono text-xs text-gray-500">{item.id}</td>
+                                  <td className="p-3 font-medium text-gray-800">
+                                    {item.name}<br/>
+                                    <span className="text-[10px] text-gray-400 font-normal">{item.brand}</span>
+                                  </td>
+                                  <td className="p-3 text-gray-600">{item.hsn}</td>
+                                  <td className="p-3 text-gray-600">{item.gstRate}%</td>
+                                  <td className="p-3 text-gray-600">₹{item.taxablePrice}</td>
+                                  <td className="p-3 font-bold text-green-600">₹{item.priceWithGst}</td>
+                                  <td className="p-3">
+                                    <div className="flex justify-center items-center gap-2">
+                                      <button 
+                                        onClick={() => { setItemForm(item); setIsItemFormVisible(true); }}
+                                        title="Edit Item"
+                                        className="text-blue-600 hover:text-blue-800 bg-blue-100 hover:bg-blue-200 p-2 rounded-md transition-colors"
+                                      >
+                                        <Edit className="w-4 h-4" />
+                                      </button>
+                                      <button 
+                                        onClick={() => setDeleteModal({ isOpen: true, itemId: item.id, pin: '' })}
+                                        title="Delete Item"
+                                        className="text-red-600 hover:text-red-800 bg-red-100 hover:bg-red-200 p-2 rounded-md transition-colors"
+                                      >
+                                        <Trash2 className="w-4 h-4" />
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
                       </div>
                     </div>
 
-                    <div className="bg-gray-50 p-3 rounded-lg border border-dashed border-gray-300 mt-2">
-                      <p className="text-[10px] text-gray-500 uppercase tracking-wide font-bold mb-1">Auto-Calculated Taxable Price</p>
-                      <p className="text-lg font-black text-gray-800">
-                        ₹ {itemForm.priceWithGst && itemForm.gstRate ? (parseFloat(itemForm.priceWithGst) / (1 + (parseFloat(itemForm.gstRate) / 100))).toFixed(2) : '0.00'}
-                      </p>
-                    </div>
-
-                    <button 
-                      onClick={saveItemToSheet}
-                      disabled={isSaving || !itemForm.id}
-                      className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white p-3 rounded-lg font-bold flex items-center justify-center gap-2 transition-colors mt-4"
-                    >
-                      {isSaving ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />} 
-                      Save Item to Cloud
-                    </button>
                   </div>
                 </div>
+              )}
 
-                {/* Table Column */}
-                <div className="lg:col-span-8 bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                  <div className="p-4 border-b flex justify-between items-center bg-slate-50">
-                    <h3 className="font-bold text-gray-700">Existing Items Directory</h3>
-                    <button onClick={fetchAppData} className="text-gray-500 hover:text-blue-600">
-                      <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin text-blue-600' : ''}`} />
-                    </button>
+              {activeTab === 'history' && (
+                <div className="p-4 md:p-8 max-w-5xl mx-auto">
+                  <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+                    <h2 className="text-2xl font-bold flex items-center gap-2 text-gray-800 shrink-0">
+                      <History className="w-6 h-6 text-blue-600" />
+                      Invoice History
+                    </h2>
+                    
+                    {/* Yaha naya Date Filter aur Mode Filter group hai */}
+                    <div className="flex flex-wrap items-center gap-3">
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs font-semibold text-gray-500 uppercase">From:</label>
+                        <input 
+                          type="date" 
+                          value={startDate} 
+                          onChange={(e) => setStartDate(e.target.value)}
+                          className="bg-white border border-gray-300 px-2 py-1.5 rounded-md text-sm shadow-sm outline-none focus:border-blue-500 cursor-pointer"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs font-semibold text-gray-500 uppercase">To:</label>
+                        <input 
+                          type="date" 
+                          value={endDate} 
+                          onChange={(e) => setEndDate(e.target.value)}
+                          className="bg-white border border-gray-300 px-2 py-1.5 rounded-md text-sm shadow-sm outline-none focus:border-blue-500 cursor-pointer"
+                        />
+                      </div>
+
+                      <select 
+                        value={historyFilter} 
+                        onChange={(e) => setHistoryFilter(e.target.value)}
+                        className="bg-white border border-gray-300 px-3 py-2 rounded-md text-sm shadow-sm outline-none focus:border-blue-500 font-medium text-gray-700 cursor-pointer"
+                      >
+                        <option value="All">All Modes</option>
+                        <option value="Online">Online</option>
+                        <option value="COD">Cash on Delivery (COD)</option>
+                        <option value="Cancelled">Cancelled</option>
+                      </select>
+
+                      <button 
+                        onClick={fetchAppData}
+                        className="bg-white border border-gray-300 hover:bg-gray-50 px-4 py-2 rounded-md flex items-center gap-2 text-sm shadow-sm transition-colors"
+                      >
+                        <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin text-blue-600' : 'text-gray-600'}`} /> Refresh
+                      </button>
+                    </div>
                   </div>
-                  <div className="overflow-x-auto">
+
+                  <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                     <table className="w-full text-left border-collapse">
-                      <thead className="bg-white border-b border-gray-200 text-xs uppercase text-gray-500">
+                      <thead className="bg-slate-50 border-b border-gray-200 text-sm">
                         <tr>
-                          <th className="p-3">ID</th>
-                          <th className="p-3">Product Name</th>
-                          <th className="p-3">HSN</th>
-                          <th className="p-3">GST %</th>
-                          <th className="p-3">Taxable</th>
-                          <th className="p-3">Final Price</th>
-                          <th className="p-3 text-center">Actions</th>
+                          <th className="p-4 font-semibold text-gray-600">Date</th>
+                          <th className="p-4 font-semibold text-gray-600">Invoice No</th>
+                          <th className="p-4 font-semibold text-gray-600">Order ID</th>
+                          <th className="p-4 font-semibold text-gray-600">Customer Name</th>
+                          <th className="p-4 font-semibold text-gray-600 text-center">Mode</th>
+                          <th className="p-4 font-semibold text-gray-600">Total Amount</th>
+                          <th className="p-4 font-semibold text-gray-600 text-center">Action</th>
                         </tr>
                       </thead>
                       <tbody className="text-sm">
-                        {itemsMaster.length === 0 ? (
-                          <tr><td colSpan="7" className="p-8 text-center text-gray-500">No items found.</td></tr>
+                        {isFetching ? (
+                          <tr>
+                            <td colSpan="7" className="p-8 text-center text-gray-500">Loading your invoices from Google Sheets...</td>
+                          </tr>
+                        ) : filteredHistory.length === 0 ? (
+                          <tr>
+                            <td colSpan="7" className="p-8 text-center text-gray-500">No invoices found for this filter.</td>
+                          </tr>
                         ) : (
-                          itemsMaster.map((item, idx) => (
-                            <tr key={idx} className="border-b border-gray-100 hover:bg-blue-50 transition-colors">
-                              <td className="p-3 font-mono text-xs text-gray-500">{item.id}</td>
-                              <td className="p-3 font-medium text-gray-800">
-                                {item.name}<br/>
-                                <span className="text-[10px] text-gray-400 font-normal">{item.brand}</span>
-                              </td>
-                              <td className="p-3 text-gray-600">{item.hsn}</td>
-                              <td className="p-3 text-gray-600">{item.gstRate}%</td>
-                              <td className="p-3 text-gray-600">₹{item.taxablePrice}</td>
-                              <td className="p-3 font-bold text-green-600">₹{item.priceWithGst}</td>
-                              <td className="p-3">
-                                <div className="flex justify-center items-center gap-2">
+                          filteredHistory.map((inv, idx) => {
+                            const currentMode = inv.paymentMode || 'Online';
+                            return (
+                              <tr key={idx} className={`border-b border-gray-100 hover:bg-blue-50 transition-colors ${currentMode === 'Cancelled' ? 'bg-red-50/30 opacity-70' : ''}`}>
+                                <td className="p-4 text-gray-600">{formatCustomDate(inv.orderDate)}</td>
+                                <td className={`p-4 font-medium ${currentMode === 'Cancelled' ? 'text-red-700 line-through decoration-red-400' : 'text-gray-800'}`}>
+                                  {inv.invoiceNo}
+                                </td>
+                                <td className="p-4 text-gray-500 text-xs">{inv.orderId}</td>
+                                <td className="p-4 font-medium">{inv.customerName}</td>
+                                <td className="p-4 text-center">
+                                  <span className={`px-2 py-1 rounded text-xs font-bold ${
+                                    currentMode === 'Cancelled' ? 'bg-red-100 text-red-600' : 
+                                    currentMode === 'COD' ? 'bg-orange-100 text-orange-700' : 
+                                    'bg-green-100 text-green-700'
+                                  }`}>
+                                    {currentMode}
+                                  </span>
+                                </td>
+                                <td className={`p-4 font-bold ${currentMode === 'Cancelled' ? 'text-gray-500' : 'text-green-600'}`}>
+                                  ₹{inv.totalAmount}
+                                </td>
+                                <td className="p-4 text-center">
                                   <button 
-                                    onClick={() => setItemForm(item)}
-                                    title="Edit Item"
-                                    className="text-blue-600 hover:text-blue-800 bg-blue-100 hover:bg-blue-200 p-2 rounded-md transition-colors"
+                                    onClick={() => loadOldInvoice(inv)}
+                                    className="text-blue-600 hover:text-blue-800 bg-blue-100 hover:bg-blue-200 px-3 py-1.5 rounded-md flex items-center justify-center gap-1 w-full font-medium transition-colors"
                                   >
-                                    <Edit className="w-4 h-4" />
+                                    <FileCheck className="w-4 h-4" /> View
                                   </button>
-                                  <button 
-                                    onClick={() => setDeleteModal({ isOpen: true, itemId: item.id, pin: '' })}
-                                    title="Delete Item"
-                                    className="text-red-600 hover:text-red-800 bg-red-100 hover:bg-red-200 p-2 rounded-md transition-colors"
-                                  >
-                                    <Trash2 className="w-4 h-4" />
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))
+                                </td>
+                              </tr>
+                            );
+                          })
                         )}
                       </tbody>
                     </table>
                   </div>
                 </div>
+              )}
 
-              </div>
-            )}
+              {activeTab === 'settings' && (
+                <div className="p-4 md:p-8 max-w-2xl mx-auto">
+                  <div className="flex justify-between items-center mb-6">
+                    <h2 className="text-2xl font-bold flex items-center gap-2 text-gray-800">
+                      <SettingsIcon className="w-6 h-6 text-blue-600" />
+                      Invoice Settings
+                    </h2>
+                  </div>
 
-            {activeTab === 'history' && (
-              <div className="p-8 max-w-5xl mx-auto">
-                <div className="flex justify-between items-center mb-6">
-                  <h2 className="text-2xl font-bold flex items-center gap-2 text-gray-800">
-                    <History className="w-6 h-6 text-blue-600" />
-                    Invoice History
-                  </h2>
-                  <button 
-                    onClick={fetchAppData}
-                    className="bg-white border border-gray-300 hover:bg-gray-50 px-4 py-2 rounded-md flex items-center gap-2 text-sm shadow-sm transition-colors"
-                  >
-                    <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin text-blue-600' : 'text-gray-600'}`} /> Refresh
-                  </button>
-                </div>
-
-                <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                  <table className="w-full text-left border-collapse">
-                    <thead className="bg-slate-50 border-b border-gray-200 text-sm">
-                      <tr>
-                        <th className="p-4 font-semibold text-gray-600">Date</th>
-                        <th className="p-4 font-semibold text-gray-600">Invoice No</th>
-                        <th className="p-4 font-semibold text-gray-600">Order ID</th>
-                        <th className="p-4 font-semibold text-gray-600">Customer Name</th>
-                        <th className="p-4 font-semibold text-gray-600">Total Amount</th>
-                        <th className="p-4 font-semibold text-gray-600 text-center">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="text-sm">
-                      {isFetching ? (
-                        <tr>
-                          <td colSpan="6" className="p-8 text-center text-gray-500">Loading your invoices from Google Sheets...</td>
-                        </tr>
-                      ) : invoiceHistory.length === 0 ? (
-                        <tr>
-                          <td colSpan="6" className="p-8 text-center text-gray-500">No invoices found. Save an invoice first!</td>
-                        </tr>
-                      ) : (
-                        invoiceHistory.map((inv, idx) => (
-                          <tr key={idx} className="border-b border-gray-100 hover:bg-blue-50 transition-colors">
-                            <td className="p-4 text-gray-600">{formatCustomDate(inv.orderDate)}</td>
-                            <td className="p-4 font-medium text-gray-800">{inv.invoiceNo}</td>
-                            <td className="p-4 text-gray-500 text-xs">{inv.orderId}</td>
-                            <td className="p-4 font-medium">{inv.customerName}</td>
-                            <td className="p-4 font-bold text-green-600">₹{inv.totalAmount}</td>
-                            <td className="p-4 text-center">
-                              <button 
-                                onClick={() => loadOldInvoice(inv)}
-                                className="text-blue-600 hover:text-blue-800 bg-blue-100 hover:bg-blue-200 px-3 py-1.5 rounded-md flex items-center justify-center gap-1 w-full font-medium transition-colors"
-                              >
-                                <FileCheck className="w-4 h-4" /> View
-                              </button>
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {activeTab === 'settings' && (
-              <div className="p-8 max-w-2xl mx-auto">
-                <div className="flex justify-between items-center mb-6">
-                  <h2 className="text-2xl font-bold flex items-center gap-2 text-gray-800">
-                    <SettingsIcon className="w-6 h-6 text-blue-600" />
-                    Invoice Settings
-                  </h2>
-                </div>
-
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-                  <div className="space-y-6">
-                    <div>
-                      <label className="block text-sm font-semibold text-gray-700 mb-2">Invoice Prefix</label>
-                      <input 
-                        type="text" 
-                        value={settings.prefix}
-                        onChange={(e) => setSettings({...settings, prefix: e.target.value.toUpperCase()})}
-                        className="w-full border border-gray-300 p-3 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-                        placeholder="e.g. FAUVXD"
-                      />
-                      <p className="text-xs text-gray-500 mt-1">This will be added before the invoice sequence number.</p>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-semibold text-gray-700 mb-2">Next Invoice Sequence Number</label>
-                      <input 
-                        type="number" 
-                        value={settings.nextNumber}
-                        onChange={(e) => setSettings({...settings, nextNumber: Number(e.target.value)})}
-                        className="w-full border border-gray-300 p-3 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-                        placeholder="e.g. 137"
-                      />
-                      <p className="text-xs text-gray-500 mt-1">This number will auto-increment every time you save a new invoice.</p>
-                    </div>
-
-                    <div className="bg-blue-50 p-4 rounded-lg border border-blue-100 flex justify-between items-center">
+                  <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+                    <div className="space-y-6">
                       <div>
-                        <span className="text-sm text-blue-800 font-medium">Preview of Next Invoice No:</span>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Invoice Prefix</label>
+                        <input 
+                          type="text" 
+                          value={settings.prefix}
+                          onChange={(e) => setSettings({...settings, prefix: e.target.value.toUpperCase()})}
+                          className="w-full border border-gray-300 p-3 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                          placeholder="e.g. FAUVXD"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">This will be added before the invoice sequence number.</p>
                       </div>
-                      <div className="font-bold text-lg text-blue-900 tracking-wider">
-                        {settings.prefix}{String(settings.nextNumber).padStart(4, '0')}
+
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Next Invoice Sequence Number</label>
+                        <input 
+                          type="number" 
+                          value={settings.nextNumber}
+                          onChange={(e) => setSettings({...settings, nextNumber: Number(e.target.value)})}
+                          className="w-full border border-gray-300 p-3 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                          placeholder="e.g. 137"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">This number will auto-increment every time you save a new invoice.</p>
                       </div>
+
+                      <div className="bg-blue-50 p-4 rounded-lg border border-blue-100 flex justify-between items-center">
+                        <div>
+                          <span className="text-sm text-blue-800 font-medium">Preview of Next Invoice No:</span>
+                        </div>
+                        <div className="font-bold text-lg text-blue-900 tracking-wider">
+                          {settings.prefix}{String(settings.nextNumber).padStart(4, '0')}
+                        </div>
+                      </div>
+
+                      <button 
+                        onClick={saveSettingsToSheet}
+                        disabled={isSaving}
+                        className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white p-3 rounded-lg font-bold flex items-center justify-center gap-2 transition-colors"
+                      >
+                        {isSaving ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />} 
+                        Save Settings to Cloud
+                      </button>
+
                     </div>
-
-                    <button 
-                      onClick={saveSettingsToSheet}
-                      disabled={isSaving}
-                      className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white p-3 rounded-lg font-bold flex items-center justify-center gap-2 transition-colors"
-                    >
-                      {isSaving ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />} 
-                      Save Settings to Cloud
-                    </button>
-
                   </div>
                 </div>
-              </div>
-            )}
+              )}
+            </main>
 
           </div>
         </div>
