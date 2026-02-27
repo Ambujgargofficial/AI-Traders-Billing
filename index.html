@@ -63,6 +63,7 @@
     const Edit = ({ className }) => <svg {...IconProps} className={className}><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>;
     const Menu = ({ className }) => <svg {...IconProps} className={className}><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="18" x2="20" y2="18"/></svg>;
     const X = ({ className }) => <svg {...IconProps} className={className}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
+    const SearchIcon = ({ className }) => <svg {...IconProps} className={className}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>;
 
     // Helper functions for Date Picker
     const getCurrentDate = () => {
@@ -252,10 +253,11 @@
       const [deleteModal, setDeleteModal] = useState({ isOpen: false, itemId: null, pin: '' });
       const [isItemFormVisible, setIsItemFormVisible] = useState(false);
       
-      // History filters (Mode + Date Range)
+      // History filters (Mode + Date Range + Search)
       const [historyFilter, setHistoryFilter] = useState('All');
       const [startDate, setStartDate] = useState(getFirstDayOfMonth());
       const [endDate, setEndDate] = useState(getLastDayOfMonth());
+      const [searchInvoiceNo, setSearchInvoiceNo] = useState('');
 
       const isInterState = invoice.customerStateCode !== FIRM_DETAILS.stateCode;
       const isInvoiceCancelled = invoice.paymentMode === 'Cancelled';
@@ -576,8 +578,13 @@
       const qrData = `Invoice No: ${invoice.invoiceNo} \nDate: ${formattedQrDate} \nTotal Amount: Rs. ${qrTotalAmount.toFixed(2)}`;
       const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(qrData)}`;
 
-      // Filter history based on Date Range and Payment Mode
+      // Filter history based on Date Range, Payment Mode, and Invoice No
       const filteredHistory = invoiceHistory.filter(inv => {
+        // Invoice Number Search filter
+        if (searchInvoiceNo && inv.invoiceNo) {
+          if (!inv.invoiceNo.toLowerCase().includes(searchInvoiceNo.toLowerCase())) return false;
+        }
+
         // Mode filter
         if (historyFilter !== 'All') {
           const mode = inv.paymentMode || 'Online';
@@ -1278,14 +1285,24 @@
 
               {activeTab === 'history' && (
                 <div className="p-4 md:p-8 max-w-5xl mx-auto">
-                  <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
-                    <h2 className="text-2xl font-bold flex items-center gap-2 text-gray-800 shrink-0">
-                      <History className="w-6 h-6 text-blue-600" />
-                      Invoice History
-                    </h2>
-                    
+                  <div className="flex flex-col md:flex-row justify-end items-start md:items-center gap-4 mb-6">
                     {/* Yaha naya Date Filter aur Mode Filter group hai */}
-                    <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-3 w-full justify-end">
+                      
+                      {/* Invoice number ke hisaab se filter */}
+                      <div className="relative">
+                        <div className="absolute inset-y-0 left-0 pl-2 flex items-center pointer-events-none">
+                          <SearchIcon className="w-4 h-4 text-gray-400" />
+                        </div>
+                        <input 
+                          type="text" 
+                          placeholder="Search Invoice No..." 
+                          value={searchInvoiceNo} 
+                          onChange={(e) => setSearchInvoiceNo(e.target.value)}
+                          className="bg-white border border-gray-300 pl-8 pr-3 py-1.5 rounded-md text-sm shadow-sm outline-none focus:border-blue-500 w-44"
+                        />
+                      </div>
+
                       <div className="flex items-center gap-2">
                         <label className="text-xs font-semibold text-gray-500 uppercase">From:</label>
                         <input 
