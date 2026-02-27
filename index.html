@@ -1279,8 +1279,8 @@
 
               {activeTab === 'history' && (
                 <div className="p-4 md:p-8 max-w-5xl mx-auto">
-                  <div className="flex flex-col md:flex-row justify-end items-start md:items-center gap-4 mb-6">
-                    <div className="flex flex-wrap items-center gap-3 w-full justify-end">
+                  <div className="flex flex-col md:flex-row justify-start items-start md:items-center gap-4 mb-6">
+                    <div className="flex flex-wrap items-center gap-3 w-full justify-start">
                       
                       <div className="relative">
                         <div className="absolute inset-y-0 left-0 pl-2 flex items-center pointer-events-none">
@@ -1324,6 +1324,18 @@
                         <option value="COD">Cash on Delivery (COD)</option>
                         <option value="Cancelled">Cancelled</option>
                       </select>
+
+                      <button
+                        onClick={() => {
+                          setSearchInvoiceNo('');
+                          setStartDate(getFirstDayOfMonth());
+                          setEndDate(getLastDayOfMonth());
+                          setHistoryFilter('All');
+                        }}
+                        className="bg-red-50 hover:bg-red-100 border border-red-200 text-red-600 px-3 py-1.5 rounded-md flex items-center gap-1 text-sm shadow-sm transition-colors font-medium"
+                      >
+                        <X className="w-4 h-4" /> Clear
+                      </button>
                     </div>
                   </div>
 
